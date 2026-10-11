@@ -28,12 +28,14 @@ PreOpCheck/                     the app itself
   HomeView.swift                home screen: Scan, Enter Manually, three most recent cases
   SavedCasesView.swift          all saved cases, plus the shared case row and swipe-to-delete
   CameraWrapperView.swift       scan flow: camera permission, privacy notice, scanner, results
-  ScannerView.swift             live camera + text recognition + drug markers + auto-capture
+  ScannerView.swift             live camera + text recognition + drawing markers + auto-capture
+  PageAnalysis.swift            the scanner's decisions: lines in, green / red / blur out (testable on images)
   ScannedLine.swift             one recognised line + its box; shared by the three page rules below
   SectionExclusion.swift        which part of the page is the allergy section (kept away from matching)
   MedicationLineCues.swift      does a line look like a medication entry (dose words, Epic detail lines)
   PatientIdentity.swift         decides which scanned lines identify the patient (name, DOB, MRN)
   RedactionOverlayView.swift    the blur bars the scanner draws over those lines
+  SteadinessMonitor.swift       motion sensor check: scanner draws nothing while the phone moves
   EntryView.swift               typing drug names by hand
   DrugMatcher.swift             turns text into drugs (exact, salt-stripped, and fuzzy matching)
   DrugLexicon.swift             big FDA name list; only answers "is this word a drug at all?"
@@ -46,7 +48,8 @@ PreOpCheck/                     the app itself
   ScreenCaptureProtection.swift blacks out results in screenshots / screen recordings
   Theme.swift                   colors and font sizes
   Info.plist, Assets.xcassets   app settings, icon, colors
-PreOpCheckTests/                tests: DrugMatcherTests, SectionExclusionTests, MedicationLineCuesTests, PatientIdentityTests
+PreOpCheckTests/                tests: DrugMatcherTests, SectionExclusionTests, MedicationLineCuesTests, PatientIdentityTests,
+                                PageAnalysisTests (whole pictures through recognition + analysis); Fixtures/ holds the pictures
 PreOpCheck.xcodeproj/           Xcode project
 tools/build_drug_lexicon.py     rebuilds DrugNames.txt from the FDA drug directory
 docs/                           README screenshot, plus docs/worklog/ (dated notes on what was done)

@@ -43,6 +43,9 @@ import Vision
 struct ScannerView: UIViewControllerRepresentable {
     @Binding var scannedMeds: [DrugMatch]
     @Binding var isScanning: Bool
+    /// Bumped by the scan flow when the results page closes, so the scanner
+    /// drops its frozen capture and goes live again.
+    var resumeToken: Int = 0
 
     func makeUIViewController(context: Context) -> ScannerViewController {
         let vc = ScannerViewController()
@@ -50,7 +53,12 @@ struct ScannerView: UIViewControllerRepresentable {
         return vc
     }
 
-    func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {
+        if context.coordinator.lastResumeToken != resumeToken {
+            context.coordinator.lastResumeToken = resumeToken
+            uiViewController.resumeScanning()
+        }
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(scannedMeds: $scannedMeds, isScanning: $isScanning)
@@ -59,6 +67,7 @@ struct ScannerView: UIViewControllerRepresentable {
     class Coordinator: NSObject, ScannerViewControllerDelegate {
         @Binding var scannedMeds: [DrugMatch]
         @Binding var isScanning: Bool
+        var lastResumeToken = 0
 
         init(scannedMeds: Binding<[DrugMatch]>, isScanning: Binding<Bool>) {
             _scannedMeds = scannedMeds
@@ -151,6 +160,10 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
     // Blur bars over patient details, under the markers.
     private let redactionOverlay = RedactionOverlayView()
 
+    // Nothing is drawn while the phone moves; see SteadinessMonitor.
+    private let steadiness = SteadinessMonitor()
+    private var overlaysHiddenForMotion = false
+
     /// Pixel size of the frames being recognised (already rotated to match
     /// the screen). Written on the camera queue, read on main under
     /// `generationLock`. Drives the Vision-to-screen mapping.
@@ -229,6 +242,15 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         layoutChrome()
     }
 
+    /// Back from the results page: the frozen capture is stale, so start a
+    /// fresh scan. Same as tapping Retake. Called by the SwiftUI wrapper,
+    /// because UIKit's appearance callbacks do not fire when SwiftUI pops a
+    /// screen off the top of this one.
+    func resumeScanning() {
+        guard phase == .captured else { return }
+        retake()
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         stopFrames()
@@ -246,6 +268,7 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
     }
 
     private func startFrames() {
+        steadiness.start()
         #if targetEnvironment(simulator)
         sampleTimer?.invalidate()
         sampleTimer = Timer.scheduledTimer(withTimeInterval: minFrameInterval, repeats: true) { [weak self] _ in
@@ -258,6 +281,7 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
     }
 
     private func stopFrames() {
+        steadiness.stop()
         #if targetEnvironment(simulator)
         sampleTimer?.invalidate()
         sampleTimer = nil
@@ -335,7 +359,9 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         startFrames()
     }
 
-    private static func renderSamplePage() -> UIImage {
+    /// Internal, not private, so the tests can run the same page through
+    /// PageAnalysis as a fixture.
+    static func renderSamplePage() -> UIImage {
         let size = CGSize(width: 1242, height: 2208)
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { ctx in
@@ -505,163 +531,31 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         generationLock.unlock()
         guard isCurrent else { return }
 
-        // Every line as text plus box, for the page-level rules below.
-        let allLines = observations.compactMap { obs in
-            obs.topCandidates(1).first.map { ScannedLine(text: $0.string, box: obs.boundingBox) }
-        }
-        // Allergy-style sections, worked out from the lines in the guide box.
-        let excludedBands = SectionExclusion.bands(in: allLines.filter { roi.intersects($0.box) })
-
-        var frameMatches: [String: DrugMatch] = [:]
-        var greenBoxes: [String: CGRect] = [:]          // drug id -> marker box
-        var unlisted: [(ingredient: String, box: CGRect)] = []
-
-        // Lines that already carry a marker, used to recognise the detail
-        // line printed under a drug name ("acetaminophen 500 mg tablet") so
-        // it is not marked a second time. `lastPlainLine` is the most recent
-        // line with no drug on it: when a title misreads and only its detail
-        // line is recognised, the marker is promoted onto that title line.
-        var markedLines: [CGRect] = []
-        var lastPlainLine: CGRect?
-        var seenUnlisted = Set<String>()
-
-        // Privacy: lines that identify the patient, judged across the whole
-        // frame so a header above the guide box counts too. Any that turn out
-        // to carry a drug are dropped from this list afterwards.
-        let identityLines = PatientIdentity.identityLines(in: allLines)
-
-        // Top of the page first, so "first seen" means "the title line".
-        for obs in observations.sorted(by: { $0.boundingBox.maxY > $1.boundingBox.maxY }) {
-            guard roi.intersects(obs.boundingBox) else { continue }
-
-            // Skip the allergy heading and the section under it.
-            if SectionExclusion.isExcluded(obs.boundingBox, by: excludedBands) { continue }
-
-            guard let candidate = obs.topCandidates(1).first else { continue }
-
-            // One token per word, each with its own box so markers sit on the
-            // word rather than the whole line. Falls back to the line box.
-            let tokens = candidate.string.split(separator: " ").map { word -> OCRToken in
-                let range = word.startIndex..<word.endIndex
-                let box = (try? candidate.boundingBox(for: range))?.boundingBox ?? obs.boundingBox
-                return OCRToken(text: String(word), box: box, ocrConfidence: candidate.confidence)
-            }
-
-            let matches = DrugMatcher.shared.match(tokens)
-            for match in matches {
-                if let existing = frameMatches[match.id] {
-                    frameMatches[match.id] = match.matchKind > existing.matchKind ? match : existing
-                } else {
-                    frameMatches[match.id] = match
-                }
-                // First line wins (the title), and the box grows to take in
-                // a bracketed brand right after the name.
-                if greenBoxes[match.id] == nil {
-                    greenBoxes[match.id] = ScannerViewController.titleBox(hitBoxes: match.boxes, in: tokens)
-                }
-            }
-            // A line with a PARC match is done: its brand in brackets, or any
-            // other word on it, never gets a red box of its own.
-            if !matches.isEmpty {
-                markedLines.append(obs.boundingBox)
-                continue
-            }
-
-            // Red: a known drug (per the lexicon) that PARC has nothing on.
-            // One box per line covering name and brand together. A drug whose
-            // ingredient was already marked higher up (the detail line under
-            // "Vitamin D3" says "cholecalciferol") is skipped.
-            // The FDA list has products called "Allergies" and "Full", so a
-            // hit only counts on a line that looks like a medication entry.
-            let hits = ScannerViewController.unlistedDrugHits(in: tokens)
-                .filter { !seenUnlisted.contains($0.ingredient) }
-            guard !hits.isEmpty,
-                  MedicationLineCues.hasMedicationContext(text: candidate.string,
-                                                          box: obs.boundingBox, in: allLines)
-            else {
-                lastPlainLine = obs.boundingBox
-                continue
-            }
-
-            let isDetail = MedicationLineCues.looksLikeDetailLine(candidate.string)
-            var box = ScannerViewController.titleBox(hitBoxes: hits.map(\.box), in: tokens)
-            if isDetail {
-                if MedicationLineCues.isDirectlyBelow(obs.boundingBox, markedLines) {
-                    continue            // detail line of a drug already marked
-                }
-                if let title = lastPlainLine,
-                   MedicationLineCues.isDirectlyBelow(obs.boundingBox, [title]) {
-                    box = title         // title misread: mark the title line instead
-                }
-            }
-
-            hits.forEach { seenUnlisted.insert($0.ingredient) }
-            unlisted.append((hits[0].ingredient, box))
-            markedLines.append(obs.boundingBox)
-        }
-
-        // Non-drug text is never retained. Only box positions leave this
-        // function, for drawing; the words themselves are discarded.
-        state.record(Array(frameMatches.values))
+        // All deciding happens in PageAnalysis; this method only tracks
+        // stability and draws. Non-drug text is never retained.
+        let analysis = PageAnalysis.analyze(PageAnalysis.lines(from: observations), roi: roi)
+        state.record(analysis.matches)
         let stableIDs = Set(state.stableMatches().map(\.id))
-
-        // Green: exactly one box per drug, on its title line.
-        let green: [(key: String, box: CGRect)] = greenBoxes.map { ($0.key, $0.value) }
-        let red: [(key: String, box: CGRect)] = unlisted.map { ("red:" + $0.ingredient, $0.box) }
-        let redactions = identityLines.filter { line in
-            !markedLines.contains { $0.intersects(line) }
-        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self, self.phase == .scanning else { return }
             self.updateCount(stableIDs.count)
-            self.redactionOverlay.update(with: redactions.map(self.viewRect(fromVisionBox:)))
-            self.drawMarkers(green: green, red: red)
             self.checkAutoCapture(stableIDs)
-        }
-    }
 
-    /// Phrases on one line that the drug lexicon knows, with their ingredient
-    /// key and box. Tries multi-word names first, longest span wins. Returns
-    /// nothing while no lexicon is bundled.
-    private static func unlistedDrugHits(in tokens: [OCRToken]) -> [(ingredient: String, box: CGRect)] {
-        let lexicon = DrugLexicon.shared
-        guard !lexicon.isEmpty, !tokens.isEmpty else { return [] }
-
-        let norms = tokens.map { DrugMatcher.normalize($0.text) }
-        var consumed = Set<Int>()
-        var hits: [(ingredient: String, box: CGRect)] = []
-
-        for span in stride(from: min(lexicon.maxWords, tokens.count), through: 1, by: -1) {
-            for start in 0...(tokens.count - span) {
-                let range = start..<(start + span)
-                if range.contains(where: { consumed.contains($0) }) { continue }
-                let phrase = norms[range].filter { !$0.isEmpty }.joined(separator: " ")
-                guard phrase.count >= 4, let ingredient = lexicon.ingredient(for: phrase) else { continue }
-                let union = tokens[range].dropFirst().reduce(tokens[start].box) { $0.union($1.box) }
-                hits.append((ingredient, union))
-                range.forEach { consumed.insert($0) }
+            // While the phone moves, boxes from a third of a second ago
+            // land in the wrong place. Clear them and wait for stillness.
+            guard self.steadiness.isSteady else {
+                if !self.overlaysHiddenForMotion {
+                    self.overlaysHiddenForMotion = true
+                    self.clearMarkers()
+                    self.redactionOverlay.clear()
+                }
+                return
             }
+            self.overlaysHiddenForMotion = false
+            self.redactionOverlay.update(with: analysis.redactions.map(self.viewRect(fromVisionBox:)))
+            self.drawMarkers(green: analysis.green, red: analysis.red)
         }
-        return hits
-    }
-
-    /// The marker box for a drug on one line: the words that matched, plus a
-    /// bracketed brand name immediately after them, so "Metformin (Glucophage)"
-    /// is boxed as one even when the brand is in neither list.
-    private static func titleBox(hitBoxes: [CGRect], in tokens: [OCRToken]) -> CGRect {
-        guard var box = hitBoxes.first else { return .zero }
-        hitBoxes.dropFirst().forEach { box = box.union($0) }
-
-        guard let last = tokens.lastIndex(where: { hitBoxes.contains($0.box) }) else { return box }
-        var i = last + 1
-        guard i < tokens.count, tokens[i].text.hasPrefix("(") else { return box }
-        while i < tokens.count, i <= last + 3 {
-            box = box.union(tokens[i].box)
-            if tokens[i].text.hasSuffix(")") { break }
-            i += 1
-        }
-        return box
     }
 
     // MARK: Markers
@@ -669,7 +563,7 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
     /// One rounded box per drug. Existing markers glide to their new place,
     /// new ones fade in, and markers not seen for `markerHold` fade out.
     /// Each incoming rect already covers every word of its drug.
-    private func drawMarkers(green: [(key: String, box: CGRect)], red: [(key: String, box: CGRect)]) {
+    private func drawMarkers(green: [PageAnalysis.Marker], red: [PageAnalysis.Marker]) {
         let now = Date()
 
         CATransaction.begin()
