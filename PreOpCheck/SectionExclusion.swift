@@ -93,7 +93,6 @@ enum SectionExclusion {
     /// "Allergies: Penicillin (rash)" has its value on the same line, so it
     /// cannot be the start of a section. A bare "ALLERGIES:" is a heading.
     static func isInlineField(_ text: String) -> Bool {
-        guard let colon = text.firstIndex(of: ":") else { return false }
-        return text[text.index(after: colon)...].contains { !$0.isWhitespace }
+        text.hasValueAfterColon
     }
 }

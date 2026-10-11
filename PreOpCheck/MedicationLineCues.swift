@@ -28,6 +28,17 @@ enum MedicationLineCues {
         "lozenge"
     ]
 
+    /// Release-form tags printed between a name and its brand: "Albuterol
+    /// HFA (ProAir HFA)", "Metoprolol ER (Toprol XL)". Part of the name for
+    /// marking purposes.
+    static let formulationTags: Set<String> = [
+        "hfa", "er", "xr", "xl", "sr", "cr", "dr", "la", "ir", "cd", "ec", "odt", "mdi", "dpi"
+    ]
+
+    static func isFormulationTag(_ text: String) -> Bool {
+        formulationTags.contains(DrugMatcher.normalize(text))
+    }
+
     static func hasDoseWord(_ text: String) -> Bool {
         let words = Set(DrugMatcher.normalize(text).split(separator: " ").map(String.init))
         return !words.isDisjoint(with: doseWords)
@@ -50,9 +61,15 @@ enum MedicationLineCues {
         }
     }
 
-    /// A dose cue on the line itself, or on the line directly under it.
+    /// A dose cue on the line itself, on the line directly under it (Epic's
+    /// detail line), or in a cell on the same row (a table with a Dose
+    /// column, where recognition returns "Acetaminophen" and "500 mg" as
+    /// separate boxes).
     static func hasMedicationContext(text: String, box: CGRect, in lines: [ScannedLine]) -> Bool {
         if hasDoseWord(text) { return true }
-        return lines.contains { isDirectlyBelow($0.box, [box]) && hasDoseWord($0.text) }
+        return lines.contains { other in
+            hasDoseWord(other.text)
+                && (isDirectlyBelow(other.box, [box]) || other.box.sharesRow(with: box))
+        }
     }
 }

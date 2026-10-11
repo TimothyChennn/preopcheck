@@ -60,6 +60,23 @@ struct MedicationLineCuesTests {
         #expect(!hasContext("Codeine - nausea and vomiting", in: page))
     }
 
+    @Test("Table with a Dose column: the dose cell on the same row is context")
+    func doseColumn() {
+        func cell(_ text: String, y: CGFloat, x: CGFloat) -> ScannedLine {
+            ScannedLine(text: text, box: CGRect(x: x, y: y - 0.03, width: 0.15, height: 0.03))
+        }
+        let page = [
+            cell("Medication", y: 0.80, x: 0.1), cell("Dose", y: 0.80, x: 0.4), cell("Frequency", y: 0.80, x: 0.6),
+            cell("Acetaminophen", y: 0.70, x: 0.1), cell("500 mg", y: 0.70, x: 0.4), cell("q6h PRN", y: 0.70, x: 0.6),
+            cell("Vitamin D3", y: 0.60, x: 0.1), cell("1,000 units", y: 0.60, x: 0.4), cell("Daily", y: 0.60, x: 0.6),
+            cell("Reconciled", y: 0.50, x: 0.1)
+        ]
+        #expect(hasContext("Acetaminophen", in: page))
+        #expect(hasContext("Vitamin D3", in: page))
+        #expect(!hasContext("Medication", in: page))
+        #expect(!hasContext("Reconciled", in: page))
+    }
+
     @Test("Detail lines", arguments: [
         ("acetaminophen 500 mg tablet", true),
         ("albuterol 90 mcg/actuation inhaler", true),

@@ -59,9 +59,10 @@ enum PatientIdentity {
 
     // "Jane Q. Sample" anywhere in a line, as footers print it. The period
     // after the initial is required: "Vitamin D Supplement" has the same
-    // shape without it.
+    // shape without it. The space after the period is optional because
+    // recognition drops it on small print ("John Q.Doe").
     private static let initialledNameRegex = try! NSRegularExpression(
-        pattern: #"\b[A-Z][a-z]+ [A-Z]\. [A-Z][a-z]+\b"#)
+        pattern: #"\b[A-Z][a-z]+ [A-Z]\.\s?[A-Z][a-z]+\b"#)
 
     // Dates in the forms printouts use: 03/14/2015, 2015-03-14, Mar 14, 2015.
     private static let dateRegex = try! NSRegularExpression(
@@ -85,14 +86,9 @@ enum PatientIdentity {
         let datesBesideIdentity = lines.filter { line in
             containsDate(line.text)
                 && !isIdentityLine(line.text)
-                && identity.contains { sharesRow($0.box, line.box) }
+                && identity.contains { $0.box.sharesRow(with: line.box) }
         }
         return (identity + datesBesideIdentity).map(\.box)
-    }
-
-    /// Two boxes on the same printed row: centres within about half a line.
-    static func sharesRow(_ a: CGRect, _ b: CGRect) -> Bool {
-        abs(a.midY - b.midY) < max(a.height, b.height) * 0.6
     }
 
     /// True when the line carries something that identifies the patient.
@@ -112,21 +108,30 @@ enum PatientIdentity {
         let wordSet = Set(words)
 
         // A label alone ("Patient Medication List") is a heading. A label with
-        // a colon or a number after it is a value.
-        let hasLabel = !wordSet.isDisjoint(with: labelWords)
-            || labelPhrases.contains { lower.contains($0) }
-        let hasValue = text.contains(":") || text.contains { $0.isNumber }
+        // a value after a colon, or a number, is a patient detail. The label
+        // must sit before the colon: in "Sort by: Name" the word "name" is
+        // the value. And the colon must have something after it: the column
+        // header "Ordering Provider :" is table chrome.
+        let labelPart = lower.split(separator: ":", maxSplits: 1).first.map(String.init) ?? lower
+        let labelWordsPresent = Set(labelPart.split { !$0.isLetter }.map(String.init))
+        let hasLabel = !labelWordsPresent.isDisjoint(with: labelWords)
+            || labelPhrases.contains { labelPart.contains($0) }
+        let hasValue = text.hasValueAfterColon || text.contains { $0.isNumber }
         if hasLabel && hasValue { return true }
 
         if let match = surnameFirstRegex.firstMatch(in: text, range: range),
            let afterComma = Range(match.range(at: 1), in: text) {
             let first = text[afterComma].lowercased().filter { $0.isLetter }
-            if !credentials.contains(first) { return true }
+            // "Smith, MD" is a clinician: final answer, the tagger is not
+            // consulted, because it reads "Smith" as a person.
+            return !credentials.contains(first)
         }
 
-        // The name tagger only sees short lines: a name sits on its own line
-        // or beside a label, never inside a sentence of directions.
-        guard words.count <= 6, wordSet.isDisjoint(with: organisationWords) else { return false }
+        // The name tagger only sees short lines of two to six words: a name
+        // sits on its own line or beside a label, never inside a sentence of
+        // directions. One word is never enough; the tagger calls "GERD",
+        // "Pain" and "Add" people.
+        guard (2...6).contains(words.count), wordSet.isDisjoint(with: organisationWords) else { return false }
         return containsPersonalName(text)
     }
 
