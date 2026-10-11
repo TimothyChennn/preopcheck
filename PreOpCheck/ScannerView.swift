@@ -212,8 +212,9 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         static let countHeight: CGFloat = 36
         static let countWidth: CGFloat = 236
         static let controlsHeight: CGFloat = 58
-        static let controlsBottomGap: CGFloat = 34
+        static let controlsBottomGap: CGFloat = 16
         static let guideMargin: CGFloat = 12          // box edge to screen edge
+        static let insideGuideEdge: CGFloat = 10      // chip and labels float this far inside the box
         static let navClearance: CGFloat = 50         // room for Cancel / info bar
         static let proceedWidth: CGFloat = 176
         static let proceedCorner: CGFloat = 14
@@ -701,6 +702,9 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         let changes = {
             self.shutter.alpha = captured ? 1 : 0
             self.retakeButton.alpha = captured ? 1 : 0
+            // The instruction shares its row with the buttons; once they
+            // appear, the green Proceed button is the instruction.
+            self.instructionLabel.alpha = captured ? 0 : 1
             self.view.setNeedsLayout()
             self.view.layoutIfNeeded()
         }
@@ -812,7 +816,7 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         // guide box's top edge.
         lockText.sizeToFit()
         let chipWidth = 12 + 12 + 7 + lockText.bounds.width + 14
-        let chipY = safeTop + L.navClearance + 10
+        let chipY = safeTop + L.navClearance + L.insideGuideEdge
         lockChip.frame = CGRect(x: (w - chipWidth) / 2, y: chipY,
                                 width: chipWidth, height: L.chipHeight)
         lockIcon.frame = CGRect(x: 12, y: (L.chipHeight - 14) / 2, width: 12, height: 14)
@@ -846,24 +850,25 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
                                width: columnX - guideLeft - L.guideMargin,
                                height: max(160, guideBottom - guideTop))
         } else {
-            // Bottom up: controls, count, instruction.
+            // Bottom up. While scanning, Proceed and Retake are invisible, so
+            // the instruction sits in their row; on capture it hides and the
+            // buttons take over. The count sits just above. The guide box
+            // then runs from under the Cancel bar down to the count, edge to
+            // edge, so as much of the list as possible is in frame.
             let controlsCenterY = h - safeBottom - L.controlsBottomGap - L.controlsHeight / 2
             placeControls(centerX: w / 2, centerY: controlsCenterY)
 
-            let countY = controlsCenterY - L.controlsHeight / 2 - L.gutter - L.countHeight
+            let instructionWidth = w - 48
+            instructionLabel.frame = CGRect(x: (w - instructionWidth) / 2,
+                                            y: controlsCenterY - L.labelHeight / 2,
+                                            width: instructionWidth, height: L.labelHeight)
+
+            let countY = controlsCenterY - L.controlsHeight / 2 - 10 - L.countHeight
             countLabel.frame = CGRect(x: (w - L.countWidth) / 2, y: countY,
                                       width: L.countWidth, height: L.countHeight)
 
-            let instructionWidth = w - 48
-            let instructionY = countY - 12 - L.labelHeight
-            instructionLabel.frame = CGRect(x: (w - instructionWidth) / 2, y: instructionY,
-                                            width: instructionWidth, height: L.labelHeight)
-
-            // The guide box is nearly the whole screen: from just under the
-            // Cancel bar to just above the instruction, edge to edge. The
-            // privacy chip floats inside its top edge.
             let guideTop = safeTop + L.navClearance
-            let guideBottom = instructionY - L.guideMargin
+            let guideBottom = countY - L.guideMargin
             guideRect = CGRect(x: L.guideMargin,
                                y: guideTop,
                                width: w - L.guideMargin * 2,
