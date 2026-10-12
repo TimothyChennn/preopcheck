@@ -2,7 +2,8 @@
 //  ResultsView.swift
 //  Stanford Preoperative Medication
 //
-//  Three buckets, top to bottom: Hold, Consult, Take as directed.
+//  Two groups, top to bottom: Hold / Consult, then Take as directed.
+//  ResultsGrouping decides which drug goes where and what its pill says.
 //
 //  A medication whose guidance branches (diuretics, GLP-1 agonists, cannabis)
 //  is a Consult. The app never asks the clinician to pick a branch. Instead
@@ -30,7 +31,7 @@ struct ResultsView: View {
     @State private var saved = false
     /// Rows the clinician has tapped open to see the full notes.
     @State private var expanded: Set<String> = []
-    /// Grouped by Hold / Consult / Take (default), or in the order the drugs
+    /// Grouped by Hold / Consult and Take (default), or in the order the drugs
     /// appeared on the page or were typed.
     @State private var grouped = true
 
@@ -42,8 +43,11 @@ struct ResultsView: View {
     private var consults: [ResolvedMedication] {
         medications.filter { $0.action.severity == .consult }
     }
+    private var holdOrConsult: [ResolvedMedication] {
+        ResultsGrouping.holdOrConsult(medications)
+    }
     private var takeAsDirected: [ResolvedMedication] {
-        medications.filter { $0.action.severity == .takeAsDirected }
+        ResultsGrouping.takeAsDirected(medications)
     }
     private var interactions: [(rule: InteractionRule, drug: Drug)] {
         MedicationDatabase.applyInteractionRules(to: medications.map { $0.match.drug })
@@ -53,10 +57,10 @@ struct ResultsView: View {
         medications.sorted { $0.order < $1.order }
     }
 
+    /// Consults share the hold red; the "*" in place of a time sets them apart.
     private func verdictColor(for med: ResolvedMedication) -> Color {
         switch med.action.severity {
-        case .hold:           return .stanford
-        case .consult:        return .orange
+        case .hold, .consult: return .stanford
         case .takeAsDirected: return .actionGreen
         }
     }
@@ -75,7 +79,7 @@ struct ResultsView: View {
                 .controlSize(.small)
                 .tint(.actionGreen)
         }
-        .accessibilityHint("On groups by hold, consult and take as directed. Off keeps the order scanned or typed.")
+        .accessibilityHint("On groups by hold or consult, and take as directed. Off keeps the order scanned or typed.")
         .padding(.leading, 10)
         .padding(.trailing, 4)
         .padding(.vertical, 3)
@@ -114,20 +118,11 @@ struct ResultsView: View {
                 .padding(.horizontal, 16)
 
                 if grouped {
-                    if !holds.isEmpty {
-                        section("Hold", accent: .stanford, prominent: true) {
-                            ForEach(holds) { med in
+                    if !holdOrConsult.isEmpty {
+                        section("Hold / Consult", accent: .stanford, prominent: true) {
+                            ForEach(holdOrConsult) { med in
                                 medicationRow(med, verdictColor: .stanford, prominent: true)
-                                divider(after: med, in: holds, inset: 20)
-                            }
-                        }
-                    }
-
-                    if !consults.isEmpty {
-                        section("Consult", accent: .orange, prominent: true) {
-                            ForEach(consults) { med in
-                                medicationRow(med, verdictColor: .orange, prominent: true)
-                                divider(after: med, in: consults, inset: 20)
+                                divider(after: med, in: holdOrConsult, inset: 20)
                             }
                         }
                     }
@@ -281,7 +276,7 @@ struct ResultsView: View {
                     if med.match.needsVerification { verifyBadge }
                     Spacer(minLength: 8)
                     // The verdict pill never shrinks or truncates; the name gives way first.
-                    Text(verdict(for: med.action))
+                    Text(ResultsGrouping.pill(for: med.action))
                         .font(.app(prominent ? 12 : 11, .bold))
                         .foregroundColor(.white)
                         .lineLimit(1)
@@ -290,6 +285,8 @@ struct ResultsView: View {
                         .background(verdictColor)
                         .cornerRadius(20)
                         .fixedSize()
+                        // VoiceOver would otherwise read "*" or "24H".
+                        .accessibilityLabel(med.action.label)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.app(11))
                         .foregroundColor(.inkTertiary)
@@ -306,26 +303,13 @@ struct ResultsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The short verdict on the pill at the right of the one-line row:
-    /// how long to hold, CONSULT, or TAKE. The full instruction
-    /// (`Action.label`) is in the expanded notes.
-    private func verdict(for action: Action) -> String {
-        switch action {
-        case .takeAsDirected:    return "TAKE"
-        case .holdDayOfSurgery:  return "HOLD DOS"
-        case .holdHours(let h):  return "\(h)H"
-        case .holdDays(let d):   return "\(d)D"
-        case .consult, .variable: return "CONSULT"
-        }
-    }
-
     /// Everything that used to sit under the name, shown when the row is tapped.
     @ViewBuilder
     private func details(for med: ResolvedMedication) -> some View {
         let drug = med.match.drug
 
         // The full instruction, since the pill only shows the short form.
-        Text(med.action.label)
+        Text(ResultsGrouping.instructionLine(for: med.action))
             .font(.app(14, .semibold))
             .foregroundColor(.stanford)
             .fixedSize(horizontal: false, vertical: true)
@@ -455,7 +439,7 @@ struct ResultsView: View {
 
     // MARK: Layout helpers
 
-    /// Hold and Consult are prominent: larger header, larger card radius.
+    /// Hold / Consult is prominent: larger header, larger card radius.
     /// Take as directed uses the quieter style but is always expanded.
     private func section<Content: View>(_ title: String,
                                         accent: Color,
