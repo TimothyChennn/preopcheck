@@ -8,9 +8,9 @@
 //     before matching, so "Codeine - nausea" under ALLERGIES is never
 //     reported as an active medication. SectionExclusion decides the bands.
 //
-//  2. LIVE MARKERS. Green ellipses outline recognised drugs; red ellipses
-//     mark drug-looking words that matched nothing, so the clinician can see
-//     that something on the page did not scan.
+//  2. LIVE MARKERS. A blue outline marks every drug picked up, whether or not
+//     PARC covers it, so the clinician can see what was read. Which ones PARC
+//     covers is shown on the results screen, not here.
 //
 //  3. AUTO-CAPTURE. There is no shutter. Once the set of recognised drugs has
 //     held steady for a second, the frame freezes and Proceed / Retake appear.
@@ -148,8 +148,8 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
 
     private let state = ScanState()
 
-    // Markers over the picture: one layer per drug, keyed by drug id (green)
-    // or ingredient (red). A marker fades in once its drug is stable, glides
+    // Markers over the picture: one layer per drug, keyed by drug id (PARC
+    // drugs) or "red:" + ingredient (drugs PARC doesn't cover). A marker fades in once its drug is stable, glides
     // to its new position each frame, and fades out when the drug is lost.
     private let markerHost = CALayer()
     private var markerLayers: [String: CAShapeLayer] = [:]
@@ -555,7 +555,7 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
             }
             self.overlaysHiddenForMotion = false
             self.redactionOverlay.update(with: analysis.redactions.map(self.viewRect(fromVisionBox:)))
-            self.drawMarkers(green: analysis.green, red: analysis.red)
+            self.drawMarkers(analysis.green + analysis.red)
         }
     }
 
@@ -564,27 +564,25 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
     /// One rounded box per drug. Existing markers glide to their new place,
     /// new ones fade in, and markers not seen for `markerHold` fade out.
     /// Each incoming rect already covers every word of its drug.
-    private func drawMarkers(green: [PageAnalysis.Marker], red: [PageAnalysis.Marker]) {
+    private func drawMarkers(_ markers: [PageAnalysis.Marker]) {
         let now = Date()
 
         CATransaction.begin()
         CATransaction.setAnimationDuration(markerGlide)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
 
-        for (isGreen, items) in [(true, green), (false, red)] {
-            for item in items {
-                let r = ScannerViewController.markerRect(viewRect(fromVisionBox: item.box))
-                let layer = markerLayers[item.key] ?? makeMarker(green: isGreen, at: r)
-                markerLayers[item.key] = layer
-                markerLastSeen[item.key] = now
-                // Animating bounds + position keeps the path static, so the
-                // move is a smooth glide rather than a path morph.
-                layer.bounds = CGRect(origin: .zero, size: r.size)
-                layer.position = CGPoint(x: r.midX, y: r.midY)
-                layer.path = UIBezierPath(roundedRect: layer.bounds,
-                                          cornerRadius: min(8, r.height / 2)).cgPath
-                layer.opacity = 1
-            }
+        for item in markers {
+            let r = ScannerViewController.markerRect(viewRect(fromVisionBox: item.box))
+            let layer = markerLayers[item.key] ?? makeMarker(at: r)
+            markerLayers[item.key] = layer
+            markerLastSeen[item.key] = now
+            // Animating bounds + position keeps the path static, so the
+            // move is a smooth glide rather than a path morph.
+            layer.bounds = CGRect(origin: .zero, size: r.size)
+            layer.position = CGPoint(x: r.midX, y: r.midY)
+            layer.path = UIBezierPath(roundedRect: layer.bounds,
+                                      cornerRadius: min(8, r.height / 2)).cgPath
+            layer.opacity = 1
         }
 
         for (key, seen) in markerLastSeen where now.timeIntervalSince(seen) > markerHold {
@@ -601,11 +599,11 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         CATransaction.commit()
     }
 
-    private func makeMarker(green: Bool, at r: CGRect) -> CAShapeLayer {
+    private func makeMarker(at r: CGRect) -> CAShapeLayer {
         let layer = CAShapeLayer()
-        layer.strokeColor = (green ? UIColor.actionGreen : UIColor.systemRed).cgColor
+        layer.strokeColor = UIColor.scanMarker.cgColor
         layer.fillColor = nil
-        layer.lineWidth = green ? 2.5 : 2
+        layer.lineWidth = 2.5
         layer.bounds = CGRect(origin: .zero, size: r.size)
         layer.position = CGPoint(x: r.midX, y: r.midY)
         layer.opacity = 0

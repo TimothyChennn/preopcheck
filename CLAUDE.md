@@ -42,13 +42,14 @@ PreOpCheck/                     the app itself
   DrugNames.txt                 the data DrugLexicon loads (generated, do not edit by hand)
   MedicationResolver.swift      one front door for "text -> drugs" (manual, scan, saved case)
   MedicationDatabase.swift      THE CLINICAL DATA: every drug and its pre-op instruction
-  ResultsView.swift             results screen: Hold / Consult / Take as directed, Save Case
+  ResultsView.swift             results screen: Hold / Consult, Take as directed, Save Case
+  ResultsGrouping.swift         which group each drug goes in and what its pill says (consult = "*")
   CaseStore.swift               saved cases, stored on the phone in UserDefaults
   PrivacyNotice.swift           first-run privacy explainer
   ScreenCaptureProtection.swift blacks out results in screenshots / screen recordings
   Theme.swift                   colors and font sizes
   Info.plist, Assets.xcassets   app settings, icon, colors
-PreOpCheckTests/                tests: DrugMatcherTests, SectionExclusionTests, MedicationLineCuesTests, PatientIdentityTests,
+PreOpCheckTests/                tests: DrugMatcherTests, SectionExclusionTests, MedicationLineCuesTests, PatientIdentityTests, ResultsGroupingTests,
                                 PageAnalysisTests (whole pictures through recognition + analysis); Fixtures/ holds the pictures
 PreOpCheck.xcodeproj/           Xcode project
 tools/build_drug_lexicon.py     rebuilds DrugNames.txt from the FDA drug directory
